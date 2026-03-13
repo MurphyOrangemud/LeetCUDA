@@ -1,5 +1,6 @@
 import torch
 from torch.utils.cpp_extension import load
+import time
 
 torch.set_grad_enabled(False)
 
@@ -20,14 +21,72 @@ lib = load(
     extra_cflags=["-std=c++17"],
 )
 
-a = torch.tensor(list(range(10)) * 1000, dtype=torch.int32).cuda()
-h_i32 = lib.histogram_i32(a)
-print("-" * 80)
-for i in range(h_i32.shape[0]):
-    print(f"h_i32   {i}: {h_i32[i]}")
+def run_benchmark(
+    perf_func: callable, 
+    a: torch.Tensor,
+    tag: str,
+    warmup: int = 10,
+    iters: int = 1000,
+    show_all: bool = False,
+):
+    # warmup
+    for i in range(warmup):
+        perf_func(a)
+    torch.cuda.synchronize()
+    start = time.time()
+    # iters
+    for i in range(iters):
+        perf_func(a)
+    torch.cuda.synchronize()
+    end = time.time()
+    total_time = (end - start) * 1000
+    mean_time = total_time / iters
+
+    out_info = f"out_{tag}"
+    print(f"{out_info:>18} time:{mean_time:.8f}ms")
 
 print("-" * 80)
-h_i32x4 = lib.histogram_i32x4(a)
-for i in range(h_i32x4.shape[0]):
-    print(f"h_i32x4 {i}: {h_i32x4[i]}")
+a = torch.tensor(list(range(10)) * 1000, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
 print("-" * 80)
+a = torch.tensor([1] * 10000, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+
+print("-" * 80)
+a = torch.tensor(list(range(10)) * 1024, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+a = torch.tensor([1] * 1024 * 10, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+
+print("-" * 80)
+a = torch.tensor(list(range(10)) * 1024 * 1024, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+a = torch.tensor([1] * 1024 * 1024, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+
+print("-" * 80)
+a = torch.tensor(list(range(10)) * 1000 * 1000, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+a = torch.tensor([1] * 1000 * 1000, dtype=torch.int32).cuda()
+run_benchmark(lib.histogram_i32, a, "h_i32")
+run_benchmark(lib.histogram_i32x4, a, "h_i32x4")
+print("-" * 80)
+
+"""
+While there's no optimization, i32x4 kernels are expected to be a bit 
+faster than i32 kernels because of vectorization.
+The 
+"""

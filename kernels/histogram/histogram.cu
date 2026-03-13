@@ -15,16 +15,35 @@
 // Histogram
 // grid(N/256), block(256)
 // a: Nx1, y: count histogram, a >= 1
-__global__ void histogram_i32_kernel(int *a, int *y, int N) {
+__global__ void histogram_i32_kernel(int *a, int *y, int N, int M) {
+  // int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  // if (idx < N)
+  //   atomicAdd(&(y[a[idx]]), 1);
+
+  extern __shared__ float local_hist[];
+
+  for (int i = threadIdx.x; i < M; i += blockDim.x) {
+    local_hist[i] = 0;
+  }
+
+  __syncthreads();
+
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N)
-    atomicAdd(&(y[a[idx]]), 1);
+  if (idx < N) {
+    atomicAdd(&local_hist[a[idx]], 1);
+  }
+
+  __syncthreads();
+
+  for (int i = threadIdx.x; i < M; i += blockDim.x) {
+    atomicAdd(&y[i], local_hist[i]);
+  }
 }
 
 // Histogram + Vec4
 // grid(N/256), block(256/4)
 // a: Nx1, y: count histogram, a >= 1
-__global__ void histogram_i32x4_kernel(int *a, int *y, int N) {
+__global__ void histogram_i32x4_kernel(int *a, int *y, int N, int M) {
   int idx = 4 * (blockIdx.x * blockDim.x + threadIdx.x);
   if (idx < N) {
     int4 reg_a = INT4(a[idx]);
@@ -66,7 +85,7 @@ __global__ void histogram_i32x4_kernel(int *a, int *y, int N) {
     dim3 grid(NUM_BLOCKS);                                                     \
     histogram_##packed_type##_kernel<<<grid, block>>>(                         \
         reinterpret_cast<element_type *>(a.data_ptr()),                        \
-        reinterpret_cast<element_type *>(y.data_ptr()), N);                    \
+        reinterpret_cast<element_type *>(y.data_ptr()), N, M);                 \
     return y;                                                                  \
   }
 
