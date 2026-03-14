@@ -18,19 +18,38 @@ __global__ void embedding_f32_kernel(const int *idx, float *weight,
   int tx = threadIdx.x;
   int bx = blockIdx.x;
   int tid = bx * blockDim.x + tx;
-  int offset = idx[bx] * emb_size;
-  output[bx * emb_size + tx] = weight[offset + tx];
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    for (int i = tx; i < emb_size; i += blockDim.x) {
+      output[query * emb_size + i] = weight[offset + i];
+    }
+  }
 }
 
 __global__ void embedding_f32x4_kernel(const int *idx, float *weight,
                                        float *output, int n, int emb_size) {
-  int tx = threadIdx.x * 4;
+  // int tx = threadIdx.x * 4;
+  // int bx = blockIdx.x;
+  // int offset = idx[bx] * emb_size;
+  // output[bx * emb_size + tx] = weight[offset + tx];
+  // output[bx * emb_size + tx + 1] = weight[offset + tx + 1];
+  // output[bx * emb_size + tx + 2] = weight[offset + tx + 2];
+  // output[bx * emb_size + tx + 3] = weight[offset + tx + 3];
+  int tx = threadIdx.x;
   int bx = blockIdx.x;
-  int offset = idx[bx] * emb_size;
-  output[bx * emb_size + tx] = weight[offset + tx];
-  output[bx * emb_size + tx + 1] = weight[offset + tx + 1];
-  output[bx * emb_size + tx + 2] = weight[offset + tx + 2];
-  output[bx * emb_size + tx + 3] = weight[offset + tx + 3];
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    // for (int i = tx * 2; i + 1 < emb_size; i += blockDim.x * 2) {
+    //   output[query * emb_size + i] = weight[offset + i];
+    //   output[query * emb_size + i + 1] = weight[offset + i + 1];
+    // }
+    for (int i = tx * 4; i + 3 < emb_size; i += blockDim.x * 4) {
+      output[query * emb_size + i] = weight[offset + i];
+      output[query * emb_size + i + 1] = weight[offset + i + 1];
+      output[query * emb_size + i + 2] = weight[offset + i + 2];
+      output[query * emb_size + i + 3] = weight[offset + i + 3];
+    }
+  }
 }
 
 __global__ void embedding_f32x4_pack_kernel(const int *idx, float *weight,
@@ -39,9 +58,13 @@ __global__ void embedding_f32x4_pack_kernel(const int *idx, float *weight,
   int tx = threadIdx.x;
   int bx = blockIdx.x;
   int tid = bx * blockDim.x + tx;
-  int offset = idx[bx] * emb_size;
-  LDST128BITS(output[bx * emb_size + 4 * tx]) =
-      LDST128BITS(weight[offset + 4 * tx]);
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    for (int i = tx; i * 4 < emb_size; i += blockDim.x) {
+      LDST128BITS(output[query * emb_size + 4 * i]) =
+        LDST128BITS(weight[offset + 4 * i]);
+    }
+  }
 }
 
 __global__ void embedding_f16_kernel(const int *idx, half *weight, half *output,
@@ -49,23 +72,31 @@ __global__ void embedding_f16_kernel(const int *idx, half *weight, half *output,
   int tx = threadIdx.x;
   int bx = blockIdx.x;
   int tid = bx * blockDim.x + tx;
-  int offset = idx[bx] * emb_size;
-  output[bx * emb_size + tx] = weight[offset + tx];
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    for (int i = tx; i < emb_size; i += blockDim.x) {
+      output[query * emb_size + i] = weight[offset + tx];
+    }
+  }
 }
 
 __global__ void embedding_f16x8_kernel(const int *idx, half *weight,
                                        half *output, int n, int emb_size) {
   int tx = threadIdx.x * 8;
   int bx = blockIdx.x;
-  int offset = idx[bx] * emb_size;
-  output[bx * emb_size + tx] = weight[offset + tx];
-  output[bx * emb_size + tx + 1] = weight[offset + tx + 1];
-  output[bx * emb_size + tx + 2] = weight[offset + tx + 2];
-  output[bx * emb_size + tx + 3] = weight[offset + tx + 3];
-  output[bx * emb_size + tx + 4] = weight[offset + tx + 4];
-  output[bx * emb_size + tx + 5] = weight[offset + tx + 5];
-  output[bx * emb_size + tx + 6] = weight[offset + tx + 6];
-  output[bx * emb_size + tx + 7] = weight[offset + tx + 7];
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    for (int i = tx; i + 7 < emb_size; i += blockDim.x * 8) {
+      output[query * emb_size + i] = weight[offset + i];
+      output[query * emb_size + i + 1] = weight[offset + i + 1];
+      output[query * emb_size + i + 2] = weight[offset + i + 2];
+      output[query * emb_size + i + 3] = weight[offset + i + 3];
+      output[query * emb_size + i + 4] = weight[offset + i + 4];
+      output[query * emb_size + i + 5] = weight[offset + i + 5];
+      output[query * emb_size + i + 6] = weight[offset + i + 6];
+      output[query * emb_size + i + 7] = weight[offset + i + 7];
+    }
+  }
 }
 
 __global__ void embedding_f16x8_pack_kernel(const int *idx, half *weight,
@@ -73,9 +104,13 @@ __global__ void embedding_f16x8_pack_kernel(const int *idx, half *weight,
   int tx = threadIdx.x;
   int bx = blockIdx.x;
   int tid = bx * blockDim.x + tx;
-  int offset = idx[bx] * emb_size;
-  LDST128BITS(output[bx * emb_size + 8 * tx]) =
-      LDST128BITS(weight[offset + 8 * tx]);
+  for (int query = bx; query < n; query += gridDim.x) {
+    int offset = idx[query] * emb_size;
+    for (int i = tx; i * 8 < emb_size; i += blockDim.x) {
+      LDST128BITS(output[query * emb_size + 8 * i]) =
+        LDST128BITS(weight[offset + 8 * i]);
+    }
+  }
 }
 
 #define STRINGFY(str) #str
