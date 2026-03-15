@@ -119,15 +119,20 @@ __global__ void hardshrink_f16x8_kernel(half *x, half *y, int N) {
 
 __global__ void hardshrink_f16x8_pack_kernel(half *x, half *y, int N) {
   int idx = 8 * (blockIdx.x * blockDim.x + threadIdx.x);
-  half pack_x[8], pack_y[8];
-  LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]);
+
+  if (idx + 7 < N) {
+    half pack_x[8], pack_y[8];
+    LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]);
 
 #pragma unroll
-  for (int i = 0; i < 8; i++) {
-    pack_y[i] = hardshrink_half(pack_x[i]);
-  }
-  if ((idx + 7) < N) {
+    for (int i = 0; i < 8; i++) {
+      pack_y[i] = hardshrink_half(pack_x[i]);
+    }
     LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
+  } else {
+    for (int i = 0; idx + i < N; ++i) {
+      y[idx + i] = hardshrink_half(x[idx + i]);
+    }
   }
 }
 

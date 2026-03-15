@@ -368,8 +368,15 @@ __global__ void layer_norm_f16x8_pack_f16_kernel(half *x, half *y, float g,
   __shared__ half s_variance; // shared within block
   // temporary register(memory), .local space in ptx, addressable
   half pack_x[8], pack_y[8]; // 8x16 bits=128 bits.
-  // reinterpret as float4 and load 128 bits in 1 memory issue.
-  LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
+
+  if (idx + 7 < N * K) {
+    // reinterpret as float4 and load 128 bits in 1 memory issue.
+    LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
+  } else {
+    for (int i = 0; i < 8; ++i) {
+      pack_x[i] = ((idx + i < N * K)? x[idx + i]: __float2half(0.0f));
+    }
+  }
 
   half value = z_;
 #pragma unroll
@@ -399,11 +406,24 @@ __global__ void layer_norm_f16x8_pack_f16_kernel(half *x, half *y, float g,
     // TODO: use __hfma2, __hsub2, __hmul2 here
     pack_y[i] = __hfma((pack_x[i] - s_mean) * s_variance, g_, b_);
   }
+//   half2 s_mean_2 = {s_mean, s_mean};
+//   half2 s_variance_2 = {s_variance, s_variance};
+//   half2 g_2_ = {g_, g_};
+//   half2 b_2_ = {b_, b_};
+//   __syncthreads();
+// #pragma unroll
+//   for (int i = 0; i < 8; i += 2) {
+//     HALF2(pack_y[i]) = __hfma2(__hmul2(__hsub2(HALF2(pack_x[i]), s_mean_2), s_variance_2), g_2_, b_2_);
+//   }
   // reinterpret as float4 and store 128 bits in 1 memory issue.
   if ((idx + 7) < N * K) {
     LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
+  } else {
+    for (int i = 0; idx + i < N * K; ++i) {
+      // y[idx + i] = pack_y[i];
+      y[idx + i] = __hfma((x[idx + i] - s_mean) * s_variance, g_, b_);
+    }
   }
-  // TODO: support non 8-multiple K here
 }
 
 template <const int NUM_THREADS = 256>

@@ -83,6 +83,18 @@ __global__ void mat_transpose_f32_diagonal2d_kernel(float *x, float *y, int row,
   if (global_col < col && global_row < row) {
     y[global_row * col + global_col] = x[global_col * row + global_row];
   }
+  // diagonized dispatch block work
+  // (0, 0) -> (0, 0)
+  // (0, 1) -> (1, 1)
+  // (0, 2) -> (2, 2)
+  // ...
+  // (1, 0) -> (0, 1)
+  // (1, 1) -> (1, 2)
+  // (1, 2) -> (2, 3)
+  // ...
+  // (2, 0) -> (0, 2)
+  // (2, 1) -> (1, 3)
+  // ...
 }
 
 __global__ void mat_transpose_f32_col2row2d_kernel(float *x, float *y,

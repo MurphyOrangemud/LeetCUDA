@@ -130,19 +130,25 @@ __global__ void sigmoid_f16x8_kernel(half *x, half *y, int N) {
 __global__ void sigmoid_f16x8_pack_kernel(half *x, half *y, int N) {
   int idx = (blockIdx.x * blockDim.x + threadIdx.x) * 8;
   const half f = __float2half(1.0f);
-  // temporary register(memory), .local space in ptx, addressable
-  half pack_x[8], pack_y[8]; // 8x16 bits=128 bits.
-  // reinterpret as float4 and load 128 bits in 1 memory issue.
-  LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
+
+  if (idx + 7 < N) {
+    // temporary register(memory), .local space in ptx, addressable
+    half pack_x[8], pack_y[8]; // 8x16 bits=128 bits.
+    // reinterpret as float4 and load 128 bits in 1 memory issue.
+    LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
 
 #pragma unroll
-  for (int i = 0; i < 8; ++i) {
-    half v = __hmin(__hmax(pack_x[i], MIN_EXP_F16), MAX_EXP_F16);
-    pack_y[i] = f / (f + hexp(-v));
-  }
-  // reinterpret as float4 and store 128 bits in 1 memory issue.
-  if ((idx + 7) < N) {
+    for (int i = 0; i < 8; ++i) {
+      half v = __hmin(__hmax(pack_x[i], MIN_EXP_F16), MAX_EXP_F16);
+      pack_y[i] = f / (f + hexp(-v));
+    }
+    // reinterpret as float4 and store 128 bits in 1 memory issue.
     LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
+  } else {
+    for (int i = 0; idx + i < N; ++i) {
+      half v = __hmin(__hmax(x[idx + i], MIN_EXP_F16), MAX_EXP_F16);
+      y[idx + i] = f / (f + hexp(-v));
+    }
   }
 }
 

@@ -350,8 +350,15 @@ __global__ void rms_norm_f16x8_pack_f16_kernel(half *x, half *y, float g, int N,
   __shared__ half s_variance; // shared within block
   // temporary register(memory), .local space in ptx, addressable
   half pack_x[8], pack_y[8]; // 8x16 bits=128 bits.
-  // reinterpret as float4 and load 128 bits in 1 memory issue.
-  LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
+
+  if (idx + 7 < N) {
+    // reinterpret as float4 and load 128 bits in 1 memory issue.
+    LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]); // load 128 bits
+  } else {
+    for (int i = 0; i < 8; ++i) {
+      pack_x[i] = ((idx + i < N)? x[idx + i]: __float2half(0.0f));
+    }
+  }
 
   half variance = z_;
 #pragma unroll
@@ -371,8 +378,11 @@ __global__ void rms_norm_f16x8_pack_f16_kernel(half *x, half *y, float g, int N,
   // reinterpret as float4 and store 128 bits in 1 memory issue.
   if ((idx + 7) < N * K) {
     LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
+  } else {
+    for (int i = 0; idx + i < N * K; ++i) {
+      y[idx + i] = pack_y[i];
+    }
   }
-  // TODO: support non 8-multiple K here
 }
 
 template <const int NUM_THREADS = 256>

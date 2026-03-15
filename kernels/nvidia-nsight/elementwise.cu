@@ -109,20 +109,25 @@ __global__ void elementwise_add_f16x8_kernel(half *a, half *b, half *c, int N) {
 __global__ void elementwise_add_f16x8_pack_kernel(half *a, half *b, half *c,
                                                   int N) {
   int idx = 8 * (blockIdx.x * blockDim.x + threadIdx.x);
-  // temporary register(memory), .local space in ptx, addressable
-  half pack_a[8], pack_b[8], pack_c[8]; // 8x16 bits=128 bits.
-  // reinterpret as float4 and load 128 bits in 1 memory issue.
-  LDST128BITS(pack_a[0]) = LDST128BITS(a[idx]); // load 128 bits
-  LDST128BITS(pack_b[0]) = LDST128BITS(b[idx]); // load 128 bits
+
+  if (idx + 7 < N) {
+    // temporary register(memory), .local space in ptx, addressable
+    half pack_a[8], pack_b[8], pack_c[8]; // 8x16 bits=128 bits.
+    // reinterpret as float4 and load 128 bits in 1 memory issue.
+    LDST128BITS(pack_a[0]) = LDST128BITS(a[idx]); // load 128 bits
+    LDST128BITS(pack_b[0]) = LDST128BITS(b[idx]); // load 128 bits
 
 #pragma unroll
-  for (int i = 0; i < 8; i += 2) {
-    // __hadd2 for half2 x 4
-    HALF2(pack_c[i]) = __hadd2(HALF2(pack_a[i]), HALF2(pack_b[i]));
-  }
-  // reinterpret as float4 and store 128 bits in 1 memory issue.
-  if ((idx + 7) < N) {
+    for (int i = 0; i < 8; i += 2) {
+      // __hadd2 for half2 x 4
+      HALF2(pack_c[i]) = __hadd2(HALF2(pack_a[i]), HALF2(pack_b[i]));
+    }
+    // reinterpret as float4 and store 128 bits in 1 memory issue.
     LDST128BITS(c[idx]) = LDST128BITS(pack_c[0]);
+  } else {
+    for (int i = 0; idx + i < N; ++i) {
+      c[idx + i] = __hadd(a[idx + i], b[idx + i]);
+    }
   }
 }
 
