@@ -502,6 +502,37 @@ for M, N, K in zip(Ms, Ns, Ks):
             c,
         )
         run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_dbuf_async,
+            a,
+            b,
+            "(wmma4x2+warp2x4+dbuf+async)",
+            c,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages,
+            a,
+            b,
+            "(wmma4x2+warp2x4+stage4)",
+            c,
+            stages=4,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages,
+            a,
+            b,
+            "(wmma4x2+warp2x4+stage3)",
+            c,
+            stages=3,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem,
+            a,
+            b,
+            "(wmma4x2+warp2x4+stage4+dsmem)",
+            c,
+            stages=4,
+        )
+        run_benchmark(
             hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages_dsmem,
             a,
             b,
@@ -514,6 +545,30 @@ for M, N, K in zip(Ms, Ns, Ks):
             a,
             b,
             "(wmma4x2+warp2x4+stage2+dsmem)",
+            c,
+            stages=2,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem,
+            a,
+            b,
+            "(wmma4x2+warp2x4+pipe4+dsmem)",
+            c,
+            stages=4,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem,
+            a,
+            b,
+            "(wmma4x2+warp2x4+pipe3+dsmem)",
+            c,
+            stages=3,
+        )
+        run_benchmark(
+            hgemm.hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem,
+            a,
+            b,
+            "(wmma4x2+warp2x4+pipe2+dsmem)",
             c,
             stages=2,
         )

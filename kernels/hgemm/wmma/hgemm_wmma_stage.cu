@@ -265,6 +265,171 @@ __global__ void __launch_bounds__(256)
   }
 }
 
+// pipeline版本（加载相邻的stage，只有一个stage差值，而不是（K_STAGE-1）个）性能稍好于stage版本，但是在stages=3时性能特别差，现在还没有搞清楚原因
+template <const int WMMA_M = 16, const int WMMA_N = 16, const int WMMA_K = 16,
+          const int WMMA_TILE_M = 4, const int WMMA_TILE_N = 2,
+          const int WARP_TILE_M = 2, const int WARP_TILE_N = 4,
+          const int A_PAD = 0, const int B_PAD = 0, const int K_STAGE = 2,
+          const bool BLOCK_SWIZZLE = false>
+__global__ void __launch_bounds__(256)
+    hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem_kernel(half *A, half *B, half *C, int M, int N, int K) {
+  const int bx = ((int)BLOCK_SWIZZLE) * blockIdx.z * gridDim.x + blockIdx.x;
+  const int by = blockIdx.y;
+  const int NUM_K_TILES = div_ceil(K, WMMA_K);
+  constexpr int BM = WMMA_M * WMMA_TILE_M * WARP_TILE_M;
+  constexpr int BN = WMMA_N * WMMA_TILE_N * WARP_TILE_N;
+  constexpr int BK = WMMA_K;
+
+  extern __shared__ half smem[];
+  half *s_a = smem;
+  half *s_b = smem + K_STAGE * BM * (BK + A_PAD);
+  constexpr int s_a_stage_offset = BM * (BK + A_PAD);
+  constexpr int s_b_stage_offset = BK * (BN + B_PAD);
+
+  const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+  const int warp_id = tid / WARP_SIZE;
+  const int warp_m = warp_id / 2; // 0,1,2,3
+  const int warp_n = warp_id % 2; // 0,1
+
+  int load_smem_a_m = tid / 2;  // 0,1,...,127
+  int load_smem_a_k = (tid % 2 == 0)? 0: 8; // 0,8
+  int load_smem_b_k = tid / 16;   // 0,1,...15
+  int load_smem_b_n = (tid % 16) * 8; // 0,8,...,120
+
+  int load_gmem_a_m = by * BM + load_smem_a_m;
+  int load_gmem_b_n = bx * BN + load_smem_b_n;
+  if (load_gmem_a_m >= M || load_gmem_b_n >= N) {
+    return;
+  }
+
+  wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> 
+      C_frag[WARP_TILE_M][WARP_TILE_N];
+
+#pragma unroll
+  for (int i = 0; i < WARP_TILE_M; i++) {
+#pragma unroll
+    for (int j = 0; j < WARP_TILE_N; j++) {
+      wmma::fill_fragment(C_frag[i][j], 0.0);
+    }
+  }
+
+  uint32_t smem_a_base_ptr = __cvta_generic_to_shared(s_a);
+  uint32_t smem_b_base_ptr = __cvta_generic_to_shared(s_b);
+
+  // difference from stages kernel: only compute first stage, not (K_STAGE - 2) stage
+  {
+    int load_gmem_a_k = load_smem_a_k;
+    int load_gmem_a_addr = load_gmem_a_m * K + load_gmem_a_k;
+    int load_gmem_b_k = load_smem_b_k;
+    int load_gmem_b_addr = load_gmem_b_k * N + load_gmem_b_n;
+
+    uint32_t load_smem_a_ptr = smem_a_base_ptr + (load_smem_a_m * (BK + A_PAD) + load_smem_a_k) * sizeof(half);
+    CP_ASYNC_CG(load_smem_a_ptr, &A[load_gmem_a_addr], 16);
+
+    uint32_t load_smem_b_ptr = smem_b_base_ptr + (load_smem_b_k * (BN + B_PAD) + load_smem_b_n) * sizeof(half);
+    CP_ASYNC_CG(load_smem_b_ptr, &B[load_gmem_b_addr], 16);
+
+    CP_ASYNC_COMMIT_GROUP();
+  }
+
+  CP_ASYNC_WAIT_GROUP(0);
+  __syncthreads();
+
+#pragma unroll
+  for (int k = 1; k < NUM_K_TILES; k++) {
+    int smem_sel = (k - 1) % K_STAGE;     // s3: 0,1,2,...
+    int smem_sel_next = (smem_sel + 1) % K_STAGE; // s3: 1,2,0,...
+
+    int load_gmem_a_k = k * WMMA_K + load_smem_a_k;
+    int load_gmem_a_addr = load_gmem_a_m * K + load_gmem_a_k;
+    int load_gmem_b_k = k * WMMA_K + load_smem_b_k;
+    int load_gmem_b_addr = load_gmem_b_k * N + load_gmem_b_n;
+
+    uint32_t load_smem_a_ptr = smem_a_base_ptr + (smem_sel_next * s_a_stage_offset 
+      + load_smem_a_m * (BK + A_PAD) + load_smem_a_k) * sizeof(half);
+    CP_ASYNC_CG(load_smem_a_ptr, &A[load_gmem_a_addr], 16);
+
+    uint32_t load_smem_b_ptr = smem_b_base_ptr + (smem_sel_next * s_b_stage_offset 
+      + load_smem_b_k * (BN + B_PAD) + load_smem_b_n) * sizeof(half);
+    CP_ASYNC_CG(load_smem_b_ptr, &B[load_gmem_b_addr], 16);
+
+    CP_ASYNC_COMMIT_GROUP();
+
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> 
+        A_frag[WARP_TILE_M];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> 
+        B_frag[WARP_TILE_N];
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_M; ++i) {
+      int warp_smem_a_m = warp_m * (WMMA_M * WARP_TILE_M) + i * WMMA_M;
+      half *load_smem_a_frag_ptr = (s_a + smem_sel * s_a_stage_offset + warp_smem_a_m * (BK + A_PAD));
+      wmma::load_matrix_sync(A_frag[i], load_smem_a_frag_ptr, BK + A_PAD);
+    }
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_N; ++i) {
+      int warp_smem_b_n = warp_n * (WMMA_N * WARP_TILE_N) + i * WMMA_N;
+      half *load_smem_b_frag_ptr = (s_b + smem_sel * s_b_stage_offset + warp_smem_b_n);
+      wmma::load_matrix_sync(B_frag[i], load_smem_b_frag_ptr, BN + B_PAD);
+    }
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_M; ++i) {
+#pragma unroll
+      for (int j = 0; j < WARP_TILE_N; ++j) {
+        wmma::mma_sync(C_frag[i][j], A_frag[i], B_frag[j], C_frag[i][j]);
+      }
+    }
+
+    CP_ASYNC_WAIT_GROUP(0);
+    __syncthreads();
+  }
+  
+  {
+    const int stage_sel = ((NUM_K_TILES - 1) % K_STAGE);
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> 
+        A_frag[WARP_TILE_M];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> 
+        B_frag[WARP_TILE_N];
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_M; ++i) {
+      int warp_smem_a_m = warp_m * (WMMA_M * WARP_TILE_M) + i * WMMA_M;
+      half *load_smem_a_frag_ptr = (s_a + stage_sel * s_a_stage_offset + warp_smem_a_m * (BK + A_PAD));
+      wmma::load_matrix_sync(A_frag[i], load_smem_a_frag_ptr, BK + A_PAD);
+    }
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_N; ++i) {
+      int warp_smem_b_n = warp_n * (WMMA_N * WARP_TILE_N) + i * WMMA_N;
+      half *load_smem_b_frag_ptr = (s_b + stage_sel * s_b_stage_offset + warp_smem_b_n);
+      wmma::load_matrix_sync(B_frag[i], load_smem_b_frag_ptr, BN + B_PAD);
+    }
+
+#pragma unroll
+    for (int i = 0; i < WARP_TILE_M; ++i) {
+#pragma unroll
+      for (int j = 0; j < WARP_TILE_N; ++j) {
+        wmma::mma_sync(C_frag[i][j], A_frag[i], B_frag[j], C_frag[i][j]);
+      }
+    }
+  }
+
+#pragma unroll
+  for (int i = 0; i < WARP_TILE_M; ++i) {
+#pragma unroll
+    for (int j = 0; j < WARP_TILE_N; ++j) {
+      const int store_gmem_a_m =
+          by * BM + warp_m * (WMMA_M * WARP_TILE_M) + i * WMMA_M;
+      const int store_gmem_a_n =
+          bx * BN + warp_n * (WMMA_N * WARP_TILE_N) + j * WMMA_N;
+      wmma::store_matrix_sync(C + store_gmem_a_m * N + store_gmem_a_n,
+                              C_frag[i][j], N, wmma::mem_row_major);
+    }
+  }
+}
+
 // stage2/3/4 (stage2=double buffers+copy async), 128x128,mma4x2,
 // warp2x4(32,64,16)
 // 1. When using shared memory exceeds 48 KB, dynamic shared memory needs to be
@@ -375,8 +540,8 @@ __global__ void __launch_bounds__(256)
     // s2/4 can use bitwise ops but s3 can not, so, we use mod
     // ops for all stages kernel. s2: (k + 1)&1, s4: (k + 1)&3
     // s3: (k + 1) % 3
-    int smem_sel = (k + 1) % K_STAGE; // s3 k 2->0, k 3->1, k 4->2...
-    int smem_sel_next = k % K_STAGE;  // s3 k 2->2, k 3->0, k 4->1...
+    int smem_sel = (k + 1) % K_STAGE; // s3 k 2->0, k 3->1, k 4->2... s4 k 3->0, k 4->1, k 5->2
+    int smem_sel_next = k % K_STAGE;  // s3 k 2->2, k 3->0, k 4->1... s4 k 3->3, k 4->0, k 5->1
 
     // k * WMMA_K, WMMA_K=16 -> (k << 4)
     int load_gmem_a_k = k * WMMA_K + load_smem_a_k; // global col of a
@@ -1087,6 +1252,128 @@ void hgemm_wmma_m16n16k16_mma4x2_warp2x4_stages(torch::Tensor a,
       break;
     default:
       LAUNCH_161616_STAGE_NO_SWIZZLE_MMA4x2_WARP2x4_KERNEL(2);
+      break;
+    }
+  }
+}
+
+// 128x128 mma4x2, warp2x4(32,64) w dynamic smem, 98304=96KB < Ampere, Ada,
+// Hopper ...
+#define LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(stages,         \
+                                                               stride)         \
+  {                                                                            \
+    const int smem_max_size = ((stages) * BM * (BK + A_PAD) * sizeof(half) +   \
+                               (stages) * BK * (BN + B_PAD) * sizeof(half));   \
+    cudaFuncSetAttribute(                                                      \
+        hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem_kernel<             \
+            WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M,     \
+            WARP_TILE_N, A_PAD, B_PAD, (stages), true>,                        \
+        cudaFuncAttributeMaxDynamicSharedMemorySize, 98304);                   \
+    const int N_SWIZZLE = (N + (stride) - 1) / (stride);                       \
+    dim3 block(NUM_THREADS);                                                   \
+    dim3 grid((div_ceil(N, BN) + N_SWIZZLE - 1) / N_SWIZZLE, div_ceil(M, BM),  \
+              N_SWIZZLE);                                                      \
+    hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem_kernel<                 \
+        WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M,         \
+        WARP_TILE_N, A_PAD, B_PAD, (stages), true>                             \
+        <<<grid, block, smem_max_size>>>(                                      \
+            reinterpret_cast<half *>(a.data_ptr()),                            \
+            reinterpret_cast<half *>(b.data_ptr()),                            \
+            reinterpret_cast<half *>(c.data_ptr()), M, N, K);                  \
+  }
+
+#define LAUNCH_161616_PIPE_NO_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(stages)      \
+  {                                                                            \
+    const int smem_max_size = ((stages) * BM * (BK + A_PAD) * sizeof(half) +   \
+                               (stages) * BK * (BN + B_PAD) * sizeof(half));   \
+    cudaFuncSetAttribute(                                                      \
+        hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem_kernel<             \
+            WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M,     \
+            WARP_TILE_N, A_PAD, B_PAD, (stages), false>,                       \
+        cudaFuncAttributeMaxDynamicSharedMemorySize, 98304);                   \
+    dim3 block(NUM_THREADS);                                                   \
+    dim3 grid(div_ceil(N, BN), div_ceil(M, BM));                               \
+    hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem_kernel<                 \
+        WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M,         \
+        WARP_TILE_N, A_PAD, B_PAD, (stages), false>                            \
+        <<<grid, block, smem_max_size>>>(                                      \
+            reinterpret_cast<half *>(a.data_ptr()),                            \
+            reinterpret_cast<half *>(b.data_ptr()),                            \
+            reinterpret_cast<half *>(c.data_ptr()), M, N, K);                  \
+  }
+
+// 128x128, mma4x2, warp2x4(32,64) stage 2/3/4 w/o block swizzle across N dim,
+// static smem < 48KB
+void hgemm_wmma_m16n16k16_mma4x2_warp2x4_pipeline_dsmem(torch::Tensor a,
+                                                        torch::Tensor b,
+                                                        torch::Tensor c, int stages,
+                                                        bool swizzle,
+                                                        int swizzle_stride) {
+  CHECK_TORCH_TENSOR_DTYPE(a, torch::kHalf)
+  CHECK_TORCH_TENSOR_DTYPE(b, torch::kHalf)
+  CHECK_TORCH_TENSOR_DTYPE(c, torch::kHalf)
+  const int M = a.size(0);
+  const int K = a.size(1);
+  const int N = b.size(1);
+  CHECK_TORCH_TENSOR_SHAPE(a, M, K)
+  CHECK_TORCH_TENSOR_SHAPE(b, K, N)
+  CHECK_TORCH_TENSOR_SHAPE(c, M, N)
+  constexpr int WMMA_M = 16;
+  constexpr int WMMA_N = 16;
+  constexpr int WMMA_K = 16;
+  constexpr int WMMA_TILE_M = 4;
+  constexpr int WMMA_TILE_N = 2;
+  constexpr int WARP_TILE_M = 2;
+  constexpr int WARP_TILE_N = 4;
+  // s_a 4  ways bank conflicts within warp, after pad 8  -> 4 ways bank
+  // conflicts. s_b 16 ways bank conflicts within warp, after pad 8  -> 8 ways
+  // bank conflicts. s_b 16 ways bank conflicts within warp, after pad 16 -> 4
+  // ways bank conflicts. so, the best padding policy for s_a and s_b is
+  // A_PAD=0/8, B_PAD=16. Thus, improve B_PAD consume 8x~ less smem than A_PAD,
+  // 16xB_PAD vs 128xA_PAD.
+  constexpr int A_PAD = 0;  // 0,8,16
+  constexpr int B_PAD = 16; // 0,8,16
+  constexpr int NUM_THREADS =
+      (WMMA_TILE_M * WMMA_TILE_N * WARP_SIZE); // 2 * 4 * 32 = 256
+  constexpr int BM = WMMA_M * WMMA_TILE_M * WARP_TILE_M;
+  constexpr int BN = WMMA_N * WMMA_TILE_N * WARP_TILE_N;
+  constexpr int BK = WMMA_K;
+  // s2: 2*128*(16)*2=8KB,  2*16*(128+16)*2=9KB,    ~17KB
+  // s3: 3*128*(16)*2=12KB, 3*16*(128+16)*2=13.5KB, ~26KB
+  // s4: 4*128*(16)*2=16KB, 4*16*(128+16)*2=18KB,   ~34KB
+  // s5: 5*128*(16)*2=20KB, 5*16*(128+16)*2=22.5KB, ~43KB
+  if (swizzle) {
+    // assert(swizzle_stride % 256 == 0);
+    switch (stages) {
+    case 2: // ~17KB
+      LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(2, swizzle_stride);
+      break;
+    case 3: // ~26KB
+      LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(3, swizzle_stride);
+      break;
+    case 4: // ~34KB
+      LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(4, swizzle_stride);
+      break;
+    case 5: // ~43KB
+      LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(5, swizzle_stride);
+      break;
+    default:
+      LAUNCH_161616_PIPE_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(2, swizzle_stride);
+      break;
+    }
+  } else {
+    switch (stages) {
+    case 2:
+      LAUNCH_161616_PIPE_NO_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(2);
+      break;
+    case 3:
+      LAUNCH_161616_PIPE_NO_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(3);
+      break;
+    case 4:
+      LAUNCH_161616_PIPE_NO_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(4);
+      break;
+    default:
+      LAUNCH_161616_PIPE_NO_SWIZZLE_DSMEM_MMA4x2_WARP2x4_KERNEL(2);
       break;
     }
   }
