@@ -151,6 +151,13 @@ for M, N, K in MNKs:
     run_benchmark(
         lib.sgemm_t_8x8_sliced_k_f32x4_bcf_dbuf, a, b, "f32x4(t8x8dbuf)", c
     )
+    run_benchmark(lib.sgemm_t_8x8_sliced_k_f32x4_bcf_dbuf_async, a, b, "f32x4(t8x8dbufasync)", c)
+    run_benchmark(lib.sgemm_t_8x4_sliced_k16_f32x4_bcf_dbuf, a, b, "f32x4(k16t8x4dbuf)", c)
+    run_benchmark(lib.sgemm_t_8x4_sliced_k16_f32x4_bcf_dbuf_async, a, b, "f32x4(k16t8x4dbufasync)", c)
+    run_benchmark(lib.sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf, a, b, "f32x4(k168x8dbuf)", c)
+    run_benchmark(lib.sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async, a, b, "f32x4(k168x8dbufasync)", c)
+    run_benchmark(lib.sgemm_t_8x16_sliced_k16_f32x4_bcf_dbuf, a, b, "f32x4(k168x16dbuf)", c)
+    run_benchmark(lib.sgemm_t_8x16_sliced_k16_f32x4_bcf_dbuf_async, a, b, "f32x4(k168x16dbufasync)", c)
     run_benchmark(lib.sgemm_cublas, a, b, "f32(cublas)", c)
     run_benchmark(partial(torch.matmul, out=c), a, b, "f32_th")
 
