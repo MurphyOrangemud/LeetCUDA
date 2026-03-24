@@ -69,6 +69,7 @@ def get_build_cuda_cflags(build_pkg: bool = False):
     extra_cuda_cflags.append("--expt-relaxed-constexpr")
     extra_cuda_cflags.append("--expt-extended-lambda")
     extra_cuda_cflags.append("--use_fast_math")
+    extra_cuda_cflags.append("-gencode=arch=compute_90,code=compute_90")
     if not build_pkg:
         extra_cuda_cflags.append("-diag-suppress 177")
         extra_cuda_cflags.append("-Xptxas -v")
@@ -120,6 +121,7 @@ def build_from_sources(verbose: bool = False):
         sources=get_build_sources(),
         extra_cuda_cflags=get_build_cuda_cflags(),
         extra_cflags=["-std=c++17"],
+        extra_ldflags=["-Wl,--no-as-needed -lcuda"],
         verbose=verbose,
     )
 
